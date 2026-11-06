@@ -276,11 +276,11 @@ export default function modernUI(update, parameters) {
                     icon: 'VIDEO_QUALITY',
                     value: 'enableHqThumbnails'
                 },
-                /*{
-                    name: 'Chapters',
+                {
+                    name: t('player.chapters.title'),
                     icon: 'BOOKMARK_BORDER',
                     value: 'enableChapters'
-                },*/
+                },
                 {
                     name: t('settings.options.misc.options.longPress'),
                     value: 'enableLongPress'

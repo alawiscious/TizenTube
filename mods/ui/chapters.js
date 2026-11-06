@@ -1,28 +1,5 @@
 import { t } from 'i18next';
 
-function parseTimestamps(input) {
-    var lines = input.trim().split('\n');
-    var result = [];
-    var timestampRegex = /^\d+:\d{2}/;
-
-    for (var i = 0; i < lines.length; i++) {
-        var line = lines[i];
-        var match = line.match(timestampRegex);
-        if (match) {
-            var timePart = match[0];
-            var parts = line.split(' ');
-            parts.shift();
-            var timeParts = timePart.split(':');
-            var minutes = parseInt(timeParts[0], 10);
-            var seconds = parseInt(timeParts[1], 10);
-            var milliseconds = (minutes * 60 + seconds) * 1000;
-            var name = parts.join(' ');
-            result.push({ time: milliseconds, name: name });
-        }
-    }
-    return result;
-}
-
 function marker(title, start, duration, videoID, i) {
     return {
         title: {
@@ -120,20 +97,77 @@ function markerEntity(videoID, markers) {
     }
 }
 
-export default function Chapters(video) {
-    const videoID = video.contents.singleColumnWatchNextResults.results.results.contents[0].itemSectionRenderer.contents[0].videoMetadataRenderer.videoId;
-    const videoDescription = video.contents.singleColumnWatchNextResults.results.results.contents[0].itemSectionRenderer.contents[0].videoMetadataRenderer.description.runs[0].text;
-    const chapters = parseTimestamps(videoDescription);
-    const videoDuration = document.getElementsByTagName('video')[0].duration * 1000;
+// Chapters come from the desktop (WEB) watch-next response: the TV client's own
+// response no longer carries the description (or any chapter data), but the WEB one
+// has YouTube's resolved chapter list (creator "DESCRIPTION_CHAPTERS", else
+// "AUTO_CHAPTERS") in the player bar markers map. One fetch per video, cached.
+const WEB_CLIENT_VERSION = '2.20251101.00.00';
+const chapterCache = {};
+
+export function extractChapters(webNext) {
+    const markersMap = webNext?.playerOverlays?.playerOverlayRenderer?.decoratedPlayerBarRenderer
+        ?.decoratedPlayerBarRenderer?.playerBar?.multiMarkersPlayerBarRenderer?.markersMap;
+    if (!Array.isArray(markersMap)) return [];
+    const entry = markersMap.find(m => m.key === 'DESCRIPTION_CHAPTERS') ||
+        markersMap.find(m => m.key === 'AUTO_CHAPTERS') ||
+        markersMap.find(m => m?.value?.chapters);
+    const chapters = entry?.value?.chapters;
+    if (!Array.isArray(chapters)) return [];
+    return chapters
+        .map(c => c.chapterRenderer)
+        .filter(c => c && c.timeRangeStartMillis !== undefined)
+        .map(c => ({
+            time: Number(c.timeRangeStartMillis),
+            name: c.title?.simpleText || (c.title?.runs || []).map(r => r.text).join('')
+        }))
+        .sort((a, b) => a.time - b.time);
+}
+
+export function fetchChapters(videoID) {
+    if (chapterCache[videoID]) return chapterCache[videoID];
+    chapterCache[videoID] = fetch(`${location.origin}/youtubei/v1/next?prettyPrint=false`, {
+        method: 'POST',
+        // No cookies: chapters are public data, and the TV session's cookies don't
+        // belong to the WEB client.
+        credentials: 'omit',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+            videoId: videoID,
+            context: { client: { clientName: 'WEB', clientVersion: WEB_CLIENT_VERSION, hl: 'en' } }
+        })
+    })
+        .then(resp => resp.json())
+        .then(extractChapters)
+        .catch(err => {
+            console.error('TizenTube: failed to fetch chapters', err);
+            delete chapterCache[videoID];
+            return [];
+        });
+    return chapterCache[videoID];
+}
+
+// Resolves with the current video's duration in ms once the player knows it.
+export function videoDurationMs() {
+    return new Promise(resolve => {
+        let tries = 0;
+        (function check() {
+            const video = document.querySelector('video');
+            if (video && isFinite(video.duration) && video.duration > 0) return resolve(video.duration * 1000);
+            if (++tries > 80) return resolve(0);
+            setTimeout(check, 250);
+        })();
+    });
+}
+
+export default function Chapters(videoID, chapters, durationMs) {
     let markers = [];
 
     for (let i = 0; i < chapters.length; i++) {
         const chapter = chapters[i];
         const nextChapter = chapters[i + 1];
-        const duration = nextChapter ? nextChapter.time - chapter.time : videoDuration - chapter.time;
-        markers.push(marker(chapter.name, String(chapter.time), String(duration), videoID, i));
+        const end = nextChapter ? nextChapter.time : Math.max(durationMs, chapter.time + 1000);
+        markers.push(marker(chapter.name, String(chapter.time), String(end - chapter.time), videoID, i));
     }
 
-    const markerEntityData = markerEntity(videoID, markers);
-    return markerEntityData;
+    return markerEntity(videoID, markers);
 }

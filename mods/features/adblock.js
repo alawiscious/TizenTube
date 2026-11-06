@@ -1,5 +1,5 @@
 import { configRead } from '../config.js';
-import Chapters from '../ui/chapters.js';
+import Chapters, { fetchChapters, videoDurationMs } from '../ui/chapters.js';
 import resolveCommand from '../resolveCommand.js';
 import { timelyAction, longPressData, MenuServiceItemRenderer, ShelfRenderer, TileRenderer, ButtonRenderer } from '../ui/ytUI.js';
 import { findFeedbackToken } from '../utils/innerTubeCalls.js';
@@ -197,25 +197,14 @@ JSON.parse = function () {
         ));
       }
     }
-    /*
-   
-    Chapters are disabled due to the API removing description data which was used to generate chapters
-   
+    // Chapters: the TV response has none, so they're fetched from the WEB client
+    // (see ui/chapters.js) and pushed into the player's entity store as a
+    // macroMarkersListEntity, then shown with loadMarkersCommand.
     if (r?.contents?.singleColumnWatchNextResults?.results?.results?.contents && configRead('enableChapters')) {
-      const chapterData = Chapters(r);
-      r.frameworkUpdates.entityBatchUpdate.mutations.push(chapterData);
-      resolveCommand({
-        "clickTrackingParams": "null",
-        "loadMarkersCommand": {
-          "visibleOnLoadKeys": [
-            chapterData.entityKey
-          ],
-          "entityKeys": [
-            chapterData.entityKey
-          ]
-        }
-      });
-    }*/
+      const videoID = r.currentVideoEndpoint?.watchEndpoint?.videoId ||
+        r.contents.singleColumnWatchNextResults.results.results.contents[0]?.itemSectionRenderer?.contents?.[0]?.videoMetadataRenderer?.videoId;
+      if (videoID) showChapters(videoID);
+    }
 
     // Manual SponsorBlock Skips
 
@@ -589,4 +578,31 @@ function hideVideo(items) {
       progressBar?.startPercent || 0);
     return percentWatched <= configRead('hideWatchedVideosThreshold');
   });
+}
+
+
+function showChapters(videoID) {
+  Promise.all([fetchChapters(videoID), videoDurationMs()]).then(([chapters, durationMs]) => {
+    if (!chapters.length) return;
+    // The user may have moved on to another video while we were fetching.
+    const m = /[?&]v=([^&]+)/.exec(location.hash);
+    const current = m && m[1];
+    if (current && current !== videoID) return;
+    const chapterData = Chapters(videoID, chapters, durationMs);
+    resolveCommand({
+      clickTrackingParams: null,
+      entityUpdateCommand: {
+        entityBatchUpdate: {
+          mutations: [chapterData]
+        }
+      }
+    });
+    resolveCommand({
+      clickTrackingParams: null,
+      loadMarkersCommand: {
+        visibleOnLoadKeys: [chapterData.entityKey],
+        entityKeys: [chapterData.entityKey]
+      }
+    });
+  }).catch(err => console.error('TizenTube: failed to show chapters', err));
 }
