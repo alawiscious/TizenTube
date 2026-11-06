@@ -1,7 +1,7 @@
 import { configRead } from '../config.js';
 import Chapters, { fetchChapters, videoDurationMs } from '../ui/chapters.js';
 import resolveCommand from '../resolveCommand.js';
-import { timelyAction, longPressData, MenuServiceItemRenderer, ShelfRenderer, TileRenderer, ButtonRenderer } from '../ui/ytUI.js';
+import { showToast, timelyAction, longPressData, MenuServiceItemRenderer, ShelfRenderer, TileRenderer, ButtonRenderer } from '../ui/ytUI.js';
 import { findFeedbackToken } from '../utils/innerTubeCalls.js';
 import { PatchSettings } from '../ui/customYTSettings.js';
 import { t } from 'i18next';
@@ -203,6 +203,7 @@ JSON.parse = function () {
     if (r?.contents?.singleColumnWatchNextResults?.results?.results?.contents && configRead('enableChapters')) {
       const videoID = r.currentVideoEndpoint?.watchEndpoint?.videoId ||
         r.contents.singleColumnWatchNextResults.results.results.contents[0]?.itemSectionRenderer?.contents?.[0]?.videoMetadataRenderer?.videoId;
+      dbg('hook fired', 'video ' + videoID);
       if (videoID) showChapters(videoID);
     }
 
@@ -583,11 +584,12 @@ function hideVideo(items) {
 
 function showChapters(videoID) {
   Promise.all([fetchChapters(videoID), videoDurationMs()]).then(([chapters, durationMs]) => {
+    dbg('fetched ' + chapters.length + ' chapters', 'duration ' + Math.round(durationMs / 1000) + 's, hash ' + location.hash.slice(0, 40));
     if (!chapters.length) return;
     // The user may have moved on to another video while we were fetching.
     const m = /[?&]v=([^&]+)/.exec(location.hash);
     const current = m && m[1];
-    if (current && current !== videoID) return;
+    if (current && current !== videoID) { dbg('skipped', 'now on ' + current); return; }
     const chapterData = Chapters(videoID, chapters, durationMs);
     resolveCommand({
       clickTrackingParams: null,
@@ -604,5 +606,12 @@ function showChapters(videoID) {
         entityKeys: [chapterData.entityKey]
       }
     });
-  }).catch(err => console.error('TizenTube: failed to show chapters', err));
+    dbg('chapters applied', chapterData.entityKey);
+  }).catch(err => { dbg('chapters error', String(err)); console.error('TizenTube: failed to show chapters', err); });
 }
+
+// TEMPORARY on-screen diagnostics for chapters (tv branch only).
+function dbg(title, sub) {
+  try { showToast('[chapters] ' + title, sub || '', null); } catch (e) { console.log('[chapters]', title, sub); }
+}
+setTimeout(() => dbg('fork build loaded', 'alawiscious/TizenTube@tv'), 10000);
